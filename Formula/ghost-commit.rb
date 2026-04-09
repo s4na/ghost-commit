@@ -1,9 +1,6 @@
 class GhostCommit < Formula
   desc "Prints hello world"
   homepage "https://github.com/s4na/ghost-commit"
-  url "https://github.com/s4na/ghost-commit.git",
-      tag:      "v0.1.0",
-      revision: "HEAD"
   license "MIT"
   head "https://github.com/s4na/ghost-commit.git", branch: "main"
 

@@ -8,7 +8,7 @@ Homebrew でインストールできます。
 
 ```sh
 brew tap s4na/ghost-commit https://github.com/s4na/ghost-commit
-brew install ghost-commit
+brew install --HEAD ghost-commit
 ```
 
 ## Usage
@@ -21,6 +21,6 @@ hello world
 ## Build from source
 
 ```sh
-go build ./...
+go build -o ghost-commit .
 ./ghost-commit
 ```
