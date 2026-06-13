@@ -133,6 +133,34 @@ func TestDoesNotCommitOrClearExistingStagedChanges(t *testing.T) {
 	}
 }
 
+func TestPathsAreRelativeToInvocationDirectory(t *testing.T) {
+	repo := newRepo(t)
+	writeFile(t, repo, "sub/a.txt", "base\n")
+	git(t, repo, "add", "sub/a.txt")
+	git(t, repo, "commit", "-m", "initial")
+
+	source := filepath.Join(t.TempDir(), "a.txt")
+	writeFile(t, filepath.Dir(source), filepath.Base(source), "ghost from subdir\n")
+
+	err := run(
+		[]string{"-m", "ghost from subdir", "--file", "a.txt=" + source},
+		strings.NewReader(""),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+		filepath.Join(repo, "sub"),
+	)
+	if err != nil {
+		t.Fatalf("run ghost-commit: %v", err)
+	}
+
+	if got := gitOutput(t, repo, "show", "HEAD:sub/a.txt"); got != "ghost from subdir\n" {
+		t.Fatalf("committed sub/a.txt = %q", got)
+	}
+	if err := exec.Command("git", "-C", repo, "show", "HEAD:a.txt").Run(); err == nil {
+		t.Fatal("ghost file was committed at repository root instead of invocation directory")
+	}
+}
+
 func TestRejectsGhostPathWithExistingStagedChanges(t *testing.T) {
 	repo := newRepo(t)
 	writeFile(t, repo, "target.txt", "base\n")
@@ -151,11 +179,42 @@ func TestRejectsGhostPathWithExistingStagedChanges(t *testing.T) {
 		&bytes.Buffer{},
 		repo,
 	)
-	if err == nil || !strings.Contains(err.Error(), "already has staged changes") {
+	if err == nil || !strings.Contains(err.Error(), "overlaps staged changes") {
 		t.Fatalf("expected staged-overlap error, got %v", err)
 	}
 	if got := gitOutput(t, repo, "show", "HEAD:target.txt"); got != "base\n" {
 		t.Fatalf("HEAD changed despite rejection: %q", got)
+	}
+}
+
+func TestRejectsParentChildStagedOverlapBeforeMovingHead(t *testing.T) {
+	repo := newRepo(t)
+	writeFile(t, repo, "base.txt", "base\n")
+	git(t, repo, "add", "base.txt")
+	git(t, repo, "commit", "-m", "initial")
+	before := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+
+	writeFile(t, repo, "dir", "already staged parent\n")
+	git(t, repo, "add", "dir")
+	source := filepath.Join(t.TempDir(), "child.txt")
+	writeFile(t, filepath.Dir(source), filepath.Base(source), "ghost child\n")
+
+	err := run(
+		[]string{"-m", "ghost child", "--file", "dir/a.txt=" + source},
+		strings.NewReader(""),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+		repo,
+	)
+	if err == nil || !strings.Contains(err.Error(), "overlaps staged changes") {
+		t.Fatalf("expected staged parent/child overlap error, got %v", err)
+	}
+	after := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+	if after != before {
+		t.Fatalf("HEAD moved despite rejection: before %s after %s", before, after)
+	}
+	if got := strings.TrimSpace(gitOutput(t, repo, "diff", "--cached", "--name-only")); got != "dir" {
+		t.Fatalf("staged parent was not preserved, got %q", got)
 	}
 }
 

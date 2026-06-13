@@ -86,6 +86,23 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workdir strin
 	}
 
 	g := gitRunner{workdir: workdir}
+	repoRoot, err := g.output(nil, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return fmt.Errorf("resolve repository root: %w", err)
+	}
+	prefix, err := g.output(nil, "rev-parse", "--show-prefix")
+	if err != nil {
+		return fmt.Errorf("resolve repository prefix: %w", err)
+	}
+	opts, err = normalizeOptions(opts, workdir, strings.TrimSpace(repoRoot), strings.TrimSpace(prefix))
+	if err != nil {
+		return err
+	}
+	if err := rejectDuplicatePaths(opts); err != nil {
+		return err
+	}
+	g = gitRunner{workdir: strings.TrimSpace(repoRoot)}
+
 	base, err := g.output(nil, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
 		return fmt.Errorf("resolve HEAD: %w", err)
@@ -205,10 +222,34 @@ func parseOptions(args []string, stderr io.Writer) (options, error) {
 	if len(opts.files) == 0 && len(opts.deletes) == 0 {
 		return opts, errors.New("at least one --file or --delete is required")
 	}
-	if err := rejectDuplicatePaths(opts); err != nil {
-		return opts, err
-	}
 	return opts, nil
+}
+
+func normalizeOptions(opts options, workdir, repoRoot, prefix string) (options, error) {
+	var normalized options
+	normalized.message = opts.message
+	for _, spec := range opts.files {
+		path, err := cleanGitPath(prefix + spec.path)
+		if err != nil {
+			return normalized, err
+		}
+		source := spec.source
+		if source != "-" && !filepath.IsAbs(source) {
+			source = filepath.Join(workdir, source)
+		}
+		normalized.files = append(normalized.files, fileSpec{path: path, source: source})
+	}
+	for _, path := range opts.deletes {
+		normalizedPath, err := cleanGitPath(prefix + path)
+		if err != nil {
+			return normalized, err
+		}
+		normalized.deletes = append(normalized.deletes, normalizedPath)
+	}
+	if repoRoot == "" {
+		return normalized, errors.New("repository root is empty")
+	}
+	return normalized, nil
 }
 
 func rejectDuplicatePaths(opts options) error {
@@ -268,16 +309,22 @@ func rejectOverlappingStagedChanges(g gitRunner, opts options) error {
 	for _, path := range opts.deletes {
 		seen[path] = struct{}{}
 	}
+	staged, err := g.stagedPaths()
+	if err != nil {
+		return err
+	}
 	for path := range seen {
-		hasChanges, err := g.hasStagedChange(path)
-		if err != nil {
-			return fmt.Errorf("check staged changes for %q: %w", path, err)
-		}
-		if hasChanges {
-			return fmt.Errorf("%q already has staged changes; unstage it before ghost-commit", path)
+		for _, stagedPath := range staged {
+			if pathsOverlap(path, stagedPath) {
+				return fmt.Errorf("%q overlaps staged changes at %q; unstage them before ghost-commit", path, stagedPath)
+			}
 		}
 	}
 	return nil
+}
+
+func pathsOverlap(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
 }
 
 func syncIndexToGhostEntries(g gitRunner, entries []virtualEntry) error {
@@ -319,17 +366,22 @@ func (g gitRunner) outputWithStdin(extraEnv []string, stdin io.Reader, args ...s
 	return string(out), nil
 }
 
-func (g gitRunner) hasStagedChange(path string) (bool, error) {
-	cmd := g.command(nil, nil, "diff", "--cached", "--quiet", "--", path)
-	err := cmd.Run()
-	if err == nil {
-		return false, nil
+func (g gitRunner) stagedPaths() ([]string, error) {
+	out, err := g.output(nil, "diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("list staged paths: %w", err)
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-		return true, nil
+	if out == "" {
+		return nil, nil
 	}
-	return false, err
+	parts := strings.Split(out, "\x00")
+	paths := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			paths = append(paths, part)
+		}
+	}
+	return paths, nil
 }
 
 func (g gitRunner) command(extraEnv []string, stdin io.Reader, args ...string) *exec.Cmd {
