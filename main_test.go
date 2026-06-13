@@ -161,6 +161,108 @@ func TestPathsAreRelativeToInvocationDirectory(t *testing.T) {
 	}
 }
 
+func TestParentPathsCanStayInsideRepositoryFromSubdirectory(t *testing.T) {
+	repo := newRepo(t)
+	writeFile(t, repo, "README.md", "base\n")
+	git(t, repo, "add", "README.md")
+	git(t, repo, "commit", "-m", "initial")
+	if err := os.Mkdir(filepath.Join(repo, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	source := filepath.Join(t.TempDir(), "README.md")
+	writeFile(t, filepath.Dir(source), filepath.Base(source), "ghost parent\n")
+
+	err := run(
+		[]string{"-m", "ghost parent", "--file", "../README.md=" + source},
+		strings.NewReader(""),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+		filepath.Join(repo, "sub"),
+	)
+	if err != nil {
+		t.Fatalf("run ghost-commit: %v", err)
+	}
+	if got := gitOutput(t, repo, "show", "HEAD:README.md"); got != "ghost parent\n" {
+		t.Fatalf("committed README.md = %q", got)
+	}
+}
+
+func TestRejectsParentPathsEscapingRepositoryFromRoot(t *testing.T) {
+	repo := newRepo(t)
+	writeFile(t, repo, "base.txt", "base\n")
+	git(t, repo, "add", "base.txt")
+	git(t, repo, "commit", "-m", "initial")
+
+	source := filepath.Join(t.TempDir(), "outside.txt")
+	writeFile(t, filepath.Dir(source), filepath.Base(source), "outside\n")
+
+	err := run(
+		[]string{"-m", "outside", "--file", "../outside.txt=" + source},
+		strings.NewReader(""),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+		repo,
+	)
+	if err == nil || !strings.Contains(err.Error(), "must stay inside the repository") {
+		t.Fatalf("expected escape rejection, got %v", err)
+	}
+}
+
+func TestReplacesDirectoryWithVirtualFile(t *testing.T) {
+	repo := newRepo(t)
+	writeFile(t, repo, "dir/a.txt", "child\n")
+	git(t, repo, "add", "dir/a.txt")
+	git(t, repo, "commit", "-m", "initial")
+
+	source := filepath.Join(t.TempDir(), "dir")
+	writeFile(t, filepath.Dir(source), filepath.Base(source), "file now\n")
+
+	err := run(
+		[]string{"-m", "replace dir with file", "--file", "dir=" + source},
+		strings.NewReader(""),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("run ghost-commit: %v", err)
+	}
+	if got := gitOutput(t, repo, "show", "HEAD:dir"); got != "file now\n" {
+		t.Fatalf("committed dir file = %q", got)
+	}
+	if err := exec.Command("git", "-C", repo, "show", "HEAD:dir/a.txt").Run(); err == nil {
+		t.Fatal("directory child still exists in HEAD")
+	}
+}
+
+func TestReplacesFileWithVirtualDirectoryChild(t *testing.T) {
+	repo := newRepo(t)
+	writeFile(t, repo, "dir", "file first\n")
+	git(t, repo, "add", "dir")
+	git(t, repo, "commit", "-m", "initial")
+
+	source := filepath.Join(t.TempDir(), "a.txt")
+	writeFile(t, filepath.Dir(source), filepath.Base(source), "child now\n")
+
+	err := run(
+		[]string{"-m", "replace file with dir child", "--file", "dir/a.txt=" + source},
+		strings.NewReader(""),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("run ghost-commit: %v", err)
+	}
+	if got := gitOutput(t, repo, "show", "HEAD:dir/a.txt"); got != "child now\n" {
+		t.Fatalf("committed dir/a.txt = %q", got)
+	}
+	if got := strings.TrimSpace(gitOutput(t, repo, "cat-file", "-t", "HEAD:dir")); got != "tree" {
+		t.Fatalf("dir should be a tree after replacement, got %q", got)
+	}
+}
+
 func TestRejectsGhostPathWithExistingStagedChanges(t *testing.T) {
 	repo := newRepo(t)
 	writeFile(t, repo, "target.txt", "base\n")

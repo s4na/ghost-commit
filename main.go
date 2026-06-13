@@ -27,7 +27,7 @@ func (s *fileSpecs) Set(value string) error {
 	if !ok {
 		return fmt.Errorf("expected PATH=SOURCE, got %q", value)
 	}
-	cleanPath, err := cleanGitPath(path)
+	cleanPath, err := cleanUserPath(path)
 	if err != nil {
 		return err
 	}
@@ -45,7 +45,7 @@ func (p *deletePaths) String() string {
 }
 
 func (p *deletePaths) Set(value string) error {
-	cleanPath, err := cleanGitPath(value)
+	cleanPath, err := cleanUserPath(value)
 	if err != nil {
 		return err
 	}
@@ -158,6 +158,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workdir strin
 		if err != nil {
 			return err
 		}
+		if err := removeIndexConflicts(g, indexEnv, spec.path); err != nil {
+			return fmt.Errorf("clear virtual index conflicts for %q: %w", spec.path, err)
+		}
 		if err := g.run(indexEnv, "update-index", "--add", "--cacheinfo", mode, strings.TrimSpace(blob), spec.path); err != nil {
 			return fmt.Errorf("stage virtual file %q: %w", spec.path, err)
 		}
@@ -165,7 +168,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workdir strin
 	}
 
 	for _, path := range opts.deletes {
-		if err := g.run(indexEnv, "update-index", "--force-remove", "--", path); err != nil {
+		if err := removeIndexConflicts(g, indexEnv, path); err != nil {
 			return fmt.Errorf("stage virtual delete %q: %w", path, err)
 		}
 		entries = append(entries, virtualEntry{path: path, delete: true})
@@ -286,6 +289,23 @@ func cleanGitPath(path string) (string, error) {
 	return clean, nil
 }
 
+func cleanUserPath(path string) (string, error) {
+	if path == "" {
+		return "", errors.New("path is empty")
+	}
+	if filepath.IsAbs(path) {
+		return "", fmt.Errorf("path %q must be relative", path)
+	}
+	clean := filepath.ToSlash(filepath.Clean(path))
+	if clean == "." {
+		return "", fmt.Errorf("path %q must name a file", path)
+	}
+	if strings.Contains(clean, "\x00") {
+		return "", errors.New("path contains NUL")
+	}
+	return clean, nil
+}
+
 func modeForPath(g gitRunner, baseCommit, path string) (string, error) {
 	out, err := g.output(nil, "ls-tree", "-z", baseCommit, "--", path)
 	if err != nil {
@@ -297,6 +317,9 @@ func modeForPath(g gitRunner, baseCommit, path string) (string, error) {
 	mode, _, ok := strings.Cut(out, " ")
 	if !ok || mode == "" {
 		return "", fmt.Errorf("could not parse git mode for %q", path)
+	}
+	if mode == "040000" {
+		return "100644", nil
 	}
 	return mode, nil
 }
@@ -329,10 +352,10 @@ func pathsOverlap(a, b string) bool {
 
 func syncIndexToGhostEntries(g gitRunner, entries []virtualEntry) error {
 	for _, entry := range entries {
+		if err := removeIndexConflicts(g, nil, entry.path); err != nil {
+			return err
+		}
 		if entry.delete {
-			if err := g.run(nil, "update-index", "--force-remove", "--", entry.path); err != nil {
-				return err
-			}
 			continue
 		}
 		if err := g.run(nil, "update-index", "--add", "--cacheinfo", entry.mode, entry.blob, entry.path); err != nil {
@@ -340,6 +363,27 @@ func syncIndexToGhostEntries(g gitRunner, entries []virtualEntry) error {
 		}
 	}
 	return nil
+}
+
+func removeIndexConflicts(g gitRunner, extraEnv []string, path string) error {
+	paths, err := g.indexPaths(extraEnv, path)
+	if err != nil {
+		return err
+	}
+	paths = append(paths, parentPaths(path)...)
+	if len(paths) == 0 {
+		return nil
+	}
+	args := append([]string{"update-index", "--force-remove", "--"}, paths...)
+	return g.run(extraEnv, args...)
+}
+
+func parentPaths(path string) []string {
+	var parents []string
+	for dir := filepath.ToSlash(filepath.Dir(path)); dir != "." && dir != "/"; dir = filepath.ToSlash(filepath.Dir(dir)) {
+		parents = append(parents, dir)
+	}
+	return parents
 }
 
 type gitRunner struct {
@@ -370,6 +414,24 @@ func (g gitRunner) stagedPaths() ([]string, error) {
 	out, err := g.output(nil, "diff", "--cached", "--name-only", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("list staged paths: %w", err)
+	}
+	if out == "" {
+		return nil, nil
+	}
+	parts := strings.Split(out, "\x00")
+	paths := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			paths = append(paths, part)
+		}
+	}
+	return paths, nil
+}
+
+func (g gitRunner) indexPaths(extraEnv []string, path string) ([]string, error) {
+	out, err := g.output(extraEnv, "ls-files", "-z", "--", path)
+	if err != nil {
+		return nil, fmt.Errorf("list index paths for %q: %w", path, err)
 	}
 	if out == "" {
 		return nil, nil
