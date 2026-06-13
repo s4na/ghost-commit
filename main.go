@@ -27,13 +27,14 @@ func (s *fileSpecs) Set(value string) error {
 	if !ok {
 		return fmt.Errorf("expected PATH=SOURCE, got %q", value)
 	}
-	if err := validateGitPath(path); err != nil {
+	cleanPath, err := cleanGitPath(path)
+	if err != nil {
 		return err
 	}
 	if source == "" {
-		return fmt.Errorf("source for %q is empty", path)
+		return fmt.Errorf("source for %q is empty", cleanPath)
 	}
-	*s = append(*s, fileSpec{path: path, source: source})
+	*s = append(*s, fileSpec{path: cleanPath, source: source})
 	return nil
 }
 
@@ -44,10 +45,11 @@ func (p *deletePaths) String() string {
 }
 
 func (p *deletePaths) Set(value string) error {
-	if err := validateGitPath(value); err != nil {
+	cleanPath, err := cleanGitPath(value)
+	if err != nil {
 		return err
 	}
-	*p = append(*p, value)
+	*p = append(*p, cleanPath)
 	return nil
 }
 
@@ -226,21 +228,21 @@ func rejectDuplicatePaths(opts options) error {
 	return nil
 }
 
-func validateGitPath(path string) error {
+func cleanGitPath(path string) (string, error) {
 	if path == "" {
-		return errors.New("path is empty")
+		return "", errors.New("path is empty")
 	}
 	if filepath.IsAbs(path) {
-		return fmt.Errorf("path %q must be relative", path)
+		return "", fmt.Errorf("path %q must be relative", path)
 	}
 	clean := filepath.ToSlash(filepath.Clean(path))
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
-		return fmt.Errorf("path %q must stay inside the repository", path)
+		return "", fmt.Errorf("path %q must stay inside the repository", path)
 	}
 	if strings.Contains(clean, "\x00") {
-		return errors.New("path contains NUL")
+		return "", errors.New("path contains NUL")
 	}
-	return nil
+	return clean, nil
 }
 
 func modeForPath(g gitRunner, baseCommit, path string) (string, error) {
