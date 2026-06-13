@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -99,6 +100,13 @@ func TestReadsOneVirtualFileFromStdin(t *testing.T) {
 	}
 }
 
+func TestHelpReturnsSuccess(t *testing.T) {
+	err := run([]string{"--help"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}, t.TempDir())
+	if err != flag.ErrHelp {
+		t.Fatalf("expected flag.ErrHelp, got %v", err)
+	}
+}
+
 func TestDoesNotCommitOrClearExistingStagedChanges(t *testing.T) {
 	repo := newRepo(t)
 	writeFile(t, repo, "base.txt", "base\n")
@@ -130,6 +138,42 @@ func TestDoesNotCommitOrClearExistingStagedChanges(t *testing.T) {
 	}
 	if got := strings.TrimSpace(gitOutput(t, repo, "diff", "--cached", "--name-only")); got != "already-staged.txt" {
 		t.Fatalf("pre-existing staged file was not preserved, got %q", got)
+	}
+}
+
+func TestRejectsInProgressMergeBeforeMovingHead(t *testing.T) {
+	repo := newRepo(t)
+	writeFile(t, repo, "conflict.txt", "base\n")
+	git(t, repo, "add", "conflict.txt")
+	git(t, repo, "commit", "-m", "initial")
+
+	git(t, repo, "checkout", "-b", "other")
+	writeFile(t, repo, "conflict.txt", "other\n")
+	git(t, repo, "commit", "-am", "other change")
+	git(t, repo, "checkout", "master")
+	writeFile(t, repo, "conflict.txt", "master\n")
+	git(t, repo, "commit", "-am", "master change")
+	before := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+
+	if out, err := gitCmd(repo, "merge", "other").CombinedOutput(); err == nil {
+		t.Fatalf("expected merge conflict, got success:\n%s", out)
+	}
+	source := filepath.Join(t.TempDir(), "ghost.txt")
+	writeFile(t, filepath.Dir(source), filepath.Base(source), "ghost\n")
+
+	err := run(
+		[]string{"-m", "ghost during merge", "--file", "ghost.txt=" + source},
+		strings.NewReader(""),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+		repo,
+	)
+	if err == nil || !strings.Contains(err.Error(), "in-progress merge") {
+		t.Fatalf("expected in-progress merge rejection, got %v", err)
+	}
+	after := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+	if after != before {
+		t.Fatalf("HEAD moved despite merge rejection: before %s after %s", before, after)
 	}
 }
 

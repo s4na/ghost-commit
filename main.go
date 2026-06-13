@@ -68,6 +68,9 @@ type virtualEntry struct {
 
 func main() {
 	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, ""); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -102,6 +105,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, workdir strin
 		return err
 	}
 	g = gitRunner{workdir: strings.TrimSpace(repoRoot)}
+	if err := rejectInProgressOperation(g); err != nil {
+		return err
+	}
 
 	base, err := g.output(nil, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
@@ -272,6 +278,28 @@ func rejectDuplicatePaths(opts options) error {
 	return nil
 }
 
+func rejectInProgressOperation(g gitRunner) error {
+	checks := map[string]string{
+		"MERGE_HEAD":       "merge",
+		"CHERRY_PICK_HEAD": "cherry-pick",
+		"REVERT_HEAD":      "revert",
+		"rebase-merge":     "rebase",
+		"rebase-apply":     "rebase",
+	}
+	for gitPath, operation := range checks {
+		path, err := g.gitPath(gitPath)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("refusing to create a ghost commit during an in-progress %s", operation)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func cleanGitPath(path string) (string, error) {
 	if path == "" {
 		return "", errors.New("path is empty")
@@ -426,6 +454,18 @@ func (g gitRunner) stagedPaths() ([]string, error) {
 		}
 	}
 	return paths, nil
+}
+
+func (g gitRunner) gitPath(path string) (string, error) {
+	out, err := g.output(nil, "rev-parse", "--git-path", path)
+	if err != nil {
+		return "", fmt.Errorf("resolve git path %q: %w", path, err)
+	}
+	resolved := strings.TrimSpace(out)
+	if filepath.IsAbs(resolved) {
+		return resolved, nil
+	}
+	return filepath.Join(g.workdir, resolved), nil
 }
 
 func (g gitRunner) indexPaths(extraEnv []string, path string) ([]string, error) {
