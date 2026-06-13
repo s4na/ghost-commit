@@ -1,12 +1,14 @@
 # ghost-commit
 
-`ghost-commit` は、実際のファイルを書き換えずに「別の内容のファイル」をコミットできる CLI です。
+[日本語](README.ja.md)
 
-LLM が作った中間ファイルや、まだ作業ツリーに存在しないファイルを、そのまま指定したパスの内容としてコミットできます。
+`ghost-commit` is a CLI for committing alternate file contents without rewriting the actual files in your working tree.
+
+It lets you commit intermediate files produced by an LLM, or files that do not exist in your working tree yet, as content at the paths you choose.
 
 ## Install
 
-Homebrew でインストールできます。
+Install with Homebrew:
 
 ```sh
 brew tap s4na/ghost-commit https://github.com/s4na/ghost-commit
@@ -15,27 +17,27 @@ brew install --HEAD ghost-commit
 
 ## Usage
 
-別ファイルの内容を `README.md` としてコミットします。
+Commit another file's contents as `README.md`.
 
 ```sh
-ghost-commit -m "README を更新" --file README.md=/tmp/llm-readme.md
+ghost-commit -m "Update README" --file README.md=/tmp/llm-readme.md
 ```
 
-標準入力から受け取った内容を、新しいファイルとしてコミットします。
+Commit content from stdin as a new file.
 
 ```sh
-cat /tmp/generated-config.yml | ghost-commit -m "設定を追加" --file config.yml=-
+cat /tmp/generated-config.yml | ghost-commit -m "Add config" --file config.yml=-
 ```
 
-ファイルが存在しない状態もコミットできます。
+Commit a state where a file does not exist.
 
 ```sh
-ghost-commit -m "古い設定を削除" --delete old-config.yml
+ghost-commit -m "Remove old config" --delete old-config.yml
 ```
 
-`ghost-commit` は指定された仮想ファイルだけをコミットします。手元のファイルや、指定していない staging 済みの変更は変更しません。
+`ghost-commit` commits only the virtual files you specify. It does not rewrite your working files or alter unrelated staged changes.
 
-コミット後に、手元のファイルが ghost commit の内容と違う場合は `git status` に差分として表示されます。これはファイルを書き換えたわけではなく、新しいコミットの内容と手元の状態が違うためです。
+After a ghost commit, `git status` may show differences if your working files differ from the new commit. That happens because the commit changed, not because `ghost-commit` rewrote those files.
 
 ## Build from source
 
